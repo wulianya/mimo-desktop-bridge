@@ -78,6 +78,8 @@ def main():
     ap.add_argument("--model", default=None)
     ap.add_argument("--dir", default=None)
     ap.add_argument("--perm", default=None, choices=[PERM_FULL, PERM_ACCEPT_EDITS])
+    ap.add_argument("--origin", default=None,
+                    help="harness 并发闸门 key。默认用桌面共享槽位；传独立值可避开与 UI 线程争用导致的 409 busy")
     ap.add_argument("--wait", type=int, default=180)
     ap.add_argument("--events", type=int, default=0)
     a = ap.parse_args()
@@ -94,17 +96,23 @@ def main():
 
     if a.message:
         print(">>> 发送指令：%s" % a.message, flush=True)
-        print(">>> dir=%s  perm=%s" % (a.dir or "(会话默认)", a.perm or "(默认权限·会弹卡片)"), flush=True)
+        print(">>> dir=%s  perm=%s  origin=%s" % (a.dir or "(会话默认)",
+                                                  a.perm or "(默认权限·会弹卡片)",
+                                                  a.origin or "(共享默认槽)"))
         if a.perm == PERM_FULL:
             print(">>> ⚠️ 已请求完全访问权限：目标将自动放行所有工具调用，不再寻求确认。", flush=True)
         t0 = time.time()
         try:
-            r = m.turn(sid, a.message, model=a.model, directory=a.dir, perm=a.perm)
+            r = m.turn(sid, a.message, model=a.model, directory=a.dir, perm=a.perm,
+                       origin=a.origin)
             print("<<< 受理：%s  耗时 %.2fs" % (json.dumps(r, ensure_ascii=False), time.time() - t0), flush=True)
         except MimoError as e:
             if e.status == 409:
-                print("!!! 会话被占用（409 busy）。几乎总是上一轮还挂着未处理的权限确认卡片 ——\n"
-                      "    请到 MiMo 界面点掉那张卡片（允许/拒绝），再重跑。", flush=True)
+                print("!!! 该会话在 harness/引擎侧被判为未空闲（409 busy）。可能原因：\n"
+                      "    ① MiMo 界面里有未处理的权限确认卡片（点掉即可）\n"
+                      "    ② 该会话有 goal-pursuit / actor 未收束\n"
+                      "    ③ UI 侧仍持有该会话的 run 槽位（该会话正开在界面上）\n"
+                      "    换 origin 无效（实测）。**最省事的解法是换一个干净会话**。", flush=True)
             else:
                 print("!!! 指令被拒：%s" % e, flush=True)
             return 1

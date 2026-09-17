@@ -91,7 +91,12 @@ python scripts/run_turn.py <sessionId> "在 D:\\tmp\\out.txt 写入 hello" --per
   想让它在某个目录干活，要么**让用户建任务时就选好项目目录**，要么**在指令里写绝对路径**。
   机理未确认，别照着文档猜。
 - **`turns` 是异步的**。POST 回 202 就结束了；要拿结果必须另开 `events`（SSE）或轮询 `messages`。
+- **202 不代表会话存在**。带合法 body 打一个**不存在**的 sessionId，服务端照样回 202
+  （校验只查 message/sessionId/model 三个字段，会话真实存在性在异步后续才暴露）。
+  所以拿到 202 之后必须靠 `messages` / `events` 确认，不能凭 202 断定成功。
 - **`events` 里 `busy` 事件会大量重复**，这是心跳不是错误；判断结束看 `session.idle`。
+- **409 busy 是按会话隔离的**：某个会话卡住时，**别的会话仍然能正常收发**；
+  换 `origin` 也解不开（实测）。所以卡住时的标准动作是**换一个干净会话**，不是重试。
 - **`model` 形如 `provider/modelID`**，例如 `xiaomi/mimo-x-pro-preview`（从 messages 的
   `info.model.{providerID,modelID}` 拼）。
 - 本机另有端口 62384（一律 404）与 55153（一律 401），**都不是可用接口**，别浪费时间。
@@ -104,7 +109,8 @@ python scripts/run_turn.py <sessionId> "在 D:\\tmp\\out.txt 写入 hello" --per
 | `401 unauthorized` | token 过期（MiMo 重启过） | 重新读 cred 文件 |
 | `403 forbidden-host` | 手动改了 Host 头 | 用 `http://127.0.0.1:<port>` 正常请求 |
 | `404 not-found` | 路径不是那 6 条之一 / sessionId 不存在 | 对照路由表 |
-| `409 busy` | 有未处理的权限卡片 | 请用户在 MiMo 界面点掉 |
+| `409 busy` | 该会话在引擎侧被判定未空闲（不只是权限卡片） | **换一个干净会话**；换 origin 无效 |
+| 发了 202 但目标没动 | 202 只代表 gate 放行，不代表会话存在 | 轮询 `messages` / 订阅 `events` 确认 |
 | `503 engine-not-ready` | 引擎没起来或未登录 | 让用户在 MiMo 里发一条消息预热 |
 | 发出去没反应 | 忘了 202 只是受理 | 订阅 `events` 或轮询 `messages` |
 

@@ -90,6 +90,44 @@ async function d(h){
 - gate 被阻塞 → 409 busy；超时阈值 `e.gateWaitMs ?? 5000`（`const Ywe = 5e3`）
 - 请求体 > 1_000_000 字节 → 400（`const Wwe = 1e6`）
 
+### ★ 202 不代表会话存在
+
+实测（2026-09-17）：`POST /v1/sessions/ses_probe0000000000000000/turns`
+带**合法 body**（message + model 都有）→ **返回 202 `{"ok":true}`**。
+
+原因：校验只查 `message.trim() / sessionId / model` 三个字段，通过后立刻 `runHarness` 并返回 202，
+**会话真实存在性在异步后续才暴露**。所以：
+
+> 拿到 202 之后必须靠轮询 `messages` / 订阅 `events` 确认是否真的跑了，不能凭 202 断定成功。
+
+### 409 busy 的判定（未完全穷尽）
+
+`function d(h)` 里 `onGate` 的返回值决定结果：
+
+```js
+const y = new Promise(S => { v = S });           // onGate
+Promise.resolve(e.runHarness({...}, {onGate: v}))
+       .then(() => v("admitted"), ...);
+const b = setTimeout(() => v("admitted"), e.gateWaitMs ?? 5000);
+return await y === "blocked" ? Nr("busy") : La(true);
+```
+
+实测边界：
+
+| 场景 | 结果 |
+|---|---|
+| 假 sessionId + 合法 body | 202（gate 放行） |
+| 某会话卡住时，**其他会话** | 202（阻塞是**按会话**的，不是全局） |
+| 同一会话，换 `origin` | 仍 409（**与 origin 无关**） |
+| 该会话 messages 全部 `completed`、无 running 工具 | 仍 409 |
+
+→ 409 表示**这个会话**在 harness/引擎侧被判定为未空闲；`/messages` 里的 "completed"
+不足以证明它空闲。真正的空闲判定在引擎内部（源码里另有 `/session/{id}/actors` 探测与
+`/session/status` 轮询），**desktop-api 没有暴露这个状态**。
+
+未确认：究竟是权限未结清、goal-pursuit 的 actor 未收束，还是 UI 侧持有了 run 槽位。
+**遇到 409 的可行解**：换一个干净会话继续（见 SKILL.md 的起手式）。
+
 ### SSE 事件流 `GET /v1/sessions/{id}/events`
 
 - 响应头 `Content-Type: text/event-stream`，先发一帧 `event: meta` → `{"api":1,"sessionId":"..."}`
@@ -154,11 +192,19 @@ function dw(e, t) {
 | 缺 sessionId | `POST /v1/sessions/ses_probe.../turns` | 400 bad-request（**不会隐式建会话**） |
 | 正常发指令 | `POST .../turns`（带 model） | **202 `{"ok":true}`**，目标实际回复 |
 | 默认权限写文件 | 同上 + 要求写文件 | 事件流出现 `permission` → 会话 busy → 后续 turns 409 |
+| 用户点「允许」后 | — | MiMo 自动重试并**真的把文件写到了磁盘**（97 字节），独立读盘核验通过 |
+| 假 sessionId + 合法 body | `POST .../turns` | **202**（gate 放行，202 ≠ 会话存在） |
+| 卡住的会话换 origin | `POST .../turns` + `origin:"probe-x"` | 仍 409（与 origin 无关） |
+| 另一会话（同时刻） | `POST .../turns` | 202（阻塞按会话隔离，非全局） |
 
 ## 7. 未确认项（别当结论用）
 
 - `dir` 参数是否在**某些条件下**能改变目标 cwd —— 实测一次未生效，机理未查。
-- `files` / `plugins` / `origin` 三个字段的实际语义，未做实验。
+- **409 busy 的确切成因**：把一个 messages 全 `completed` 的会话判为 busy 的内部条件未定位（见 §3）。
+- `perm` 传 `"完全访问权限"` 是否真能免掉确认卡片 —— **未能测完**（目标会话一直 409，换不了干净会话）。
+  代码路径（`dw()` → `{mode:"auto"}`）支持这个结论，但缺一次端到端实测。
+- `files` / `plugins` 两个字段的实际语义，未做实验（`origin` 已排除与 busy 相关）。
 - `/v1/sessions/{id}/files` 的可读范围（源码里有 `zue(...)` 做白名单，来自 messages 里出现过的文件；
   403 `forbidden-file` 的精确触发条件未穷举）。
 - `api` 版本号目前只有 `1`，未来若升到 2，路径前缀会变成 `/v2`（`Ch` 既用于前缀也用于凭证字段）。
+

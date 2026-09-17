@@ -127,7 +127,12 @@ class Mimo:
 
     def turn(self, session_id, message, model=None, directory=None, perm=None,
              origin=None, files=None):
-        """发一轮指令。服务端立刻返回 202，真正的输出要另外用 events() 订阅。"""
+        """发一轮指令。服务端立刻返回 202，真正的输出要另外用 events() 订阅。
+
+        model 必填（服务端第一行就校验），形如 "xiaomi/mimo-x-pro-preview"。
+        origin 是 harness 的并发闸门 key：同一 origin 有 run 在跑时新请求返回 409 busy。
+        传一个独立 origin 可以绕开与桌面 UI 线程的争用。
+        """
         body = {"message": message}
         if model:
             body["model"] = model
