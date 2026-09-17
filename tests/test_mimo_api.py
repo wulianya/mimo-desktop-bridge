@@ -20,7 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts"))
-from mimo_api import Mimo, MimoError  # noqa: E402
+from mimo_api import Mimo, MimoError, is_settled  # noqa: E402
 
 TOKEN = "test-token-0123456789"
 SESSION_OK = "ses_test0000000000000000000000"
@@ -152,6 +152,42 @@ class StubHandler(BaseHTTPRequestHandler):
             captured.update(body)
             return self._json(202, {"ok": True})
         return self._err(404, "not-found")
+
+
+class TestIsSettled(unittest.TestCase):
+    """is_settled 的回归护栏。
+
+    这个函数是被真实 bug 逼出来的：assistant 消息在流式输出期间就已经出现在 /messages 里，
+    `info.time.completed` 还是 None，只看 role 会在半途以为结束。
+    """
+
+    def test_user_message_is_always_settled(self):
+        self.assertTrue(is_settled({"info": {"role": "user"}, "parts": []}))
+
+    def test_assistant_completed(self):
+        self.assertTrue(is_settled({
+            "info": {"role": "assistant", "time": {"created": 1, "completed": 2}},
+            "parts": [{"type": "text", "text": "done"}],
+        }))
+
+    def test_assistant_still_streaming(self):
+        # completed 缺失 = 还在跑
+        self.assertFalse(is_settled({
+            "info": {"role": "assistant", "time": {"created": 1}},
+            "parts": [{"type": "text", "text": "部分"}],
+        }))
+
+    def test_assistant_with_running_tool(self):
+        self.assertFalse(is_settled({
+            "info": {"role": "assistant", "time": {"created": 1, "completed": 2}},
+            "parts": [{"type": "tool", "tool": "bash", "state": {"status": "running"}}],
+        }))
+
+    def test_assistant_with_completed_tool(self):
+        self.assertTrue(is_settled({
+            "info": {"role": "assistant", "time": {"created": 1, "completed": 2}},
+            "parts": [{"type": "tool", "tool": "bash", "state": {"status": "completed"}}],
+        }))
 
 
 class TestMimoApi(unittest.TestCase):

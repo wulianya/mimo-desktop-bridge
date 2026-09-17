@@ -30,7 +30,7 @@ import time
 from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from mimo_api import Mimo, MimoError  # noqa: E402
+from mimo_api import Mimo, MimoError, settle_wait  # noqa: E402
 
 PERM_FULL = "完全访问权限"
 PERM_ACCEPT_EDITS = "帮我审批"
@@ -128,24 +128,21 @@ def main():
         m.events(sid, a.dir, seconds=a.events, on_event=on_ev)
         print("<<< 事件类型统计：%s" % dict(hist), flush=True)
 
-    print(">>> 轮询消息直至出结果（上限 %ds）…" % a.wait, flush=True)
-    deadline = time.time() + a.wait
-    last_n = len(m.messages(sid, a.dir) or [])
-    print("    起始消息数：%d" % last_n, flush=True)
-    while time.time() < deadline:
-        time.sleep(4)
-        cur = m.messages(sid, a.dir) or []
-        if len(cur) > last_n:
-            tail = cur[-1]
-            role = (tail.get("info") or {}).get("role")
-            if role == "assistant":
-                print("\n===== 助手回复（消息数 %d→%d）=====" % (last_n, len(cur)), flush=True)
-                print(extract_text(tail), flush=True)
-                return 0
-            print("    新增 %d 条（role=%s），继续等…" % (len(cur) - last_n, role), flush=True)
-            last_n = len(cur)
-    print("!!! 超时：%ds 内未拿到助手回复。常见原因：权限确认卡片待处理（看 MiMo 界面）。" % a.wait, flush=True)
-    return 2
+    print(">>> 轮询消息直至「最后一条已收尾」（上限 %ds）…" % a.wait, flush=True)
+    n0 = len(m.messages(sid, a.dir) or [])
+    print("    起始消息数：%d" % n0, flush=True)
+    ok, cur = settle_wait(m, sid, a.dir, timeout=a.wait,
+                          on_tick=lambda c: print("    …%d 条" % len(c), flush=True)
+                          if len(c) != n0 else None)
+    if not ok:
+        print("!!! 超时：%ds 内未收尾。常见原因：权限确认卡片待处理（看 MiMo 界面）。" % a.wait,
+              flush=True)
+        return 2
+    tail = cur[-1] if cur else None
+    print("\n===== 最终回复（消息数 %d→%d）=====" % (n0, len(cur)), flush=True)
+    if tail:
+        print(extract_text(tail), flush=True)
+    return 0
 
 
 if __name__ == "__main__":

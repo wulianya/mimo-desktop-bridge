@@ -8,6 +8,7 @@ MiMo Desktop 启动时会在用户数据目录写下一个 `desktop-api.json`，
 - 读 MiMo 的会话列表和完整对话内容
 - **发指令给 MiMo**，让它在自己的项目上下文里干活
 - 订阅 SSE 事件流，实时看它的思考 / 工具调用 / 权限请求
+- **看透一个会话**：地址、模型、对话内容、**思维链**、工具调用、交付文件
 - 跨 Agent 编排（本 Agent 规划，MiMo 执行）
 
 不需要 playwright，不需要 UI 自动化 —— 走的是官方留下的**原生接口**。
@@ -31,6 +32,10 @@ python scripts/run_turn.py <sessionId> "把当前目录的文件列表告诉我"
 
 # 4) 读某个会话的全部消息
 python scripts/mimo_api.py messages <sessionId>
+
+# 5) 把一个会话彻底看透（地址/模型/内容/思维链/工具/交付文件，六项一次给全）
+python scripts/inspect_session.py <sessionId>
+python scripts/inspect_session.py <sessionId> --turn "让它做点事" --perm "完全访问权限" --events 40
 ```
 
 零依赖：只用 Python 标准库（`urllib`）。Python 3.8+。
@@ -101,12 +106,15 @@ python scripts/mimo_api.py messages <sessionId>
 ## 测试
 
 ```bash
-python tests/test_mimo_api.py      # 13 个用例，本地打桩服务，不需要 MiMo 在跑
+python tests/test_mimo_api.py      # 18 个用例，本地打桩服务，不需要 MiMo 在跑
 python -m pytest tests/ -v         # 有 pytest 的话
 ```
 
 打桩服务按真实服务端的准入规则复刻了 Bearer 校验、Host 白名单、路由分派和错误码，
 所以这些测试同时是**接口契约的回归护栏**。
+
+其中 `TestIsSettled` 是被真实 bug 逼出来的：assistant 消息在流式输出期间就已经出现在
+`/messages` 里（`info.time.completed` 仍为 `None`），只看 role 会在半途误判结束。
 
 ---
 

@@ -53,7 +53,7 @@ agent_created: true
 |---|---|
 | 不传 / `""` | 默认权限。每个受保护操作（bash / write / …）弹确认卡片，**会话进入 busy，后续 turns 一律 409** |
 | `"帮我审批"` | 仅 `edit`/`write`/`apply_patch` 自动批准；bash 等仍走审查 |
-| `"完全访问权限"` | **全自动批准**，不再弹卡片 |
+| `"完全访问权限"` | **全自动批准**，不再弹卡片（实测：事件流里零 `permission` 事件） |
 
 卡住时的症状与解法：
 - 事件流里出现 `{"type":"permission","req":{"id":"per_...","permission":"bash","patterns":[...]}}`
@@ -97,6 +97,14 @@ python scripts/run_turn.py <sessionId> "在 D:\\tmp\\out.txt 写入 hello" --per
 - **`events` 里 `busy` 事件会大量重复**，这是心跳不是错误；判断结束看 `session.idle`。
 - **409 busy 是按会话隔离的**：某个会话卡住时，**别的会话仍然能正常收发**；
   换 `origin` 也解不开（实测）。所以卡住时的标准动作是**换一个干净会话**，不是重试。
+- ★ **判断「一轮结束」不能只看「末条是不是 assistant」**：assistant 消息在流式输出期间
+  就已经出现在 `/messages` 里，此时 `info.time.completed` 是 `None`、工具 part 可能还是 `running`。
+  正确条件 = `completed` 有值 + 无 running part + 连续两次消息数不变。
+  用 `mimo_api.is_settled()` / `settle_wait()`，别自己写循环。
+- **思维链是可读的**：`parts[].type=="reasoning"` 里有模型显式输出的推理原文；
+  `parts[].type=="step-finish"` 里有 token 与 cost 细分。要审计它在想什么，读这两处。
+- **别采信模型的自述**：实测协议层 `info.model.modelID` 是 `xiaomi/mimo-x-pro-preview`，
+  而它自己回答"我是 mimo-v2.5-pro"。**要准确值就读协议字段。**
 - **`model` 形如 `provider/modelID`**，例如 `xiaomi/mimo-x-pro-preview`（从 messages 的
   `info.model.{providerID,modelID}` 拼）。
 - 本机另有端口 62384（一律 404）与 55153（一律 401），**都不是可用接口**，别浪费时间。
@@ -118,8 +126,9 @@ python scripts/run_turn.py <sessionId> "在 D:\\tmp\\out.txt 写入 hello" --per
 
 | 路径 | 说明 |
 |---|---|
-| `scripts/mimo_api.py` | 客户端库 + CLI（6 路由封装、`selftest`） |
-| `scripts/run_turn.py` | 闭环驱动：发指令 → 订阅事件 → 轮询结果 |
+| `scripts/mimo_api.py` | 客户端库 + CLI（6 路由封装、`selftest`、`is_settled`/`settle_wait`） |
+| `scripts/run_turn.py` | 闭环驱动：发指令 → 订阅事件 → 等收尾 → 打印结果 |
+| `scripts/inspect_session.py` | **看透一个会话**：地址 / 模型 / 内容 / 思维链 / 工具调用 / 交付文件 |
 | `scripts/watch_new_session.py` | 捕捉用户在 UI 里新建的会话 |
-| `references/api-spec.md` | 完整 API 规格 + 逆向证据（函数名/文件位置） |
+| `references/api-spec.md` | 完整 API 规格 + 逆向证据 + 实测记录 + 未确认项 |
 | `tests/test_mimo_api.py` | 离线单元测试（本地打桩服务，不需要 MiMo 在跑） |

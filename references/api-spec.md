@@ -193,6 +193,9 @@ function dw(e, t) {
 | 正常发指令 | `POST .../turns`（带 model） | **202 `{"ok":true}`**，目标实际回复 |
 | 默认权限写文件 | 同上 + 要求写文件 | 事件流出现 `permission` → 会话 busy → 后续 turns 409 |
 | 用户点「允许」后 | — | MiMo 自动重试并**真的把文件写到了磁盘**（97 字节），独立读盘核验通过 |
+| `perm:"完全访问权限"` | 干净新会话 + 写文件指令 | **零 `permission` 事件**（计数仅 `ui:45 / text-partial:200 / busy:414`），bash 直接执行、文件落盘 121 字节，读盘核验一致 |
+| 交付文件核验 | 从消息抽路径后 `os.stat` | 抽到 `deliver.txt` 121 B @ 17:52:59，内容与模型自述一致 |
+| 思维链可读性 | `parts[].type=="reasoning"` | 拿到推理原文（含它对"配置里没有 model 字段"的判断过程） |
 | 假 sessionId + 合法 body | `POST .../turns` | **202**（gate 放行，202 ≠ 会话存在） |
 | 卡住的会话换 origin | `POST .../turns` + `origin:"probe-x"` | 仍 409（与 origin 无关） |
 | 另一会话（同时刻） | `POST .../turns` | 202（阻塞按会话隔离，非全局） |
@@ -200,11 +203,41 @@ function dw(e, t) {
 ## 7. 未确认项（别当结论用）
 
 - `dir` 参数是否在**某些条件下**能改变目标 cwd —— 实测一次未生效，机理未查。
-- **409 busy 的确切成因**：把一个 messages 全 `completed` 的会话判为 busy 的内部条件未定位（见 §3）。
-- `perm` 传 `"完全访问权限"` 是否真能免掉确认卡片 —— **未能测完**（目标会话一直 409，换不了干净会话）。
-  代码路径（`dw()` → `{mode:"auto"}`）支持这个结论，但缺一次端到端实测。
+- **409 busy 的确切成因**：把一个 messages 全 `completed` 的会话判决为 busy 的内部条件未定位（见 §3）。
+  已排除：origin 冲突、全局槽位、未收尾的 assistant 消息（该会话末条 `completed` 有值）。
 - `files` / `plugins` 两个字段的实际语义，未做实验（`origin` 已排除与 busy 相关）。
 - `/v1/sessions/{id}/files` 的可读范围（源码里有 `zue(...)` 做白名单，来自 messages 里出现过的文件；
   403 `forbidden-file` 的精确触发条件未穷举）。
 - `api` 版本号目前只有 `1`，未来若升到 2，路径前缀会变成 `/v2`（`Ch` 既用于前缀也用于凭证字段）。
+- 模型在自然语言里自报的身份可能与协议层不一致：实测 provider/model 字段是
+  `xiaomi/mimo-x-pro-preview`，而它自己回答"我是 mimo-v2.5-pro"。
+  **要拿准确值请读协议字段，不要采信模型自述。**
+
+## 8. 读取一个会话的六个维度（实测可拿全）
+
+| 维度 | 数据来源 | 实测结果 |
+|---|---|---|
+| 地址 | `sessions[].directory` / `projectID` / `project.worktree` | ✅ 会话目录、项目根都有 |
+| 模型 | 每条消息 `info.model.{providerID,modelID}` | ✅ `xiaomi/mimo-x-pro-preview` |
+| 对话内容 | `parts[].type=="text"` | ✅ 全文可读 |
+| **思维链** | `parts[].type=="reasoning"` | ✅ **模型显式输出的推理原文可读**（英文/中文混排） |
+| 工具调用 | `parts[].type=="tool"`，含 `state.input` / `state.output` / `state.status` | ✅ 工具名、入参、回显、状态全有 |
+| token 统计 | `parts[].type=="step-finish"` 的 `tokens` / `cost` | ✅ 含 cache.read / output / reasoning 细分 |
+| 权限 | SSE 的 `permission` 事件；`turns` 的 `perm` 字段 | ✅ 见 §4，`"完全访问权限"` 实测**零 permission 事件** |
+| 交付文件 | 从工具入参/文本正则抽绝对路径 → 直接 `os.stat` 核验 | ✅ 抽到并核验了真实落盘文件 |
+
+### ★ 判断「一轮结束了」的正确姿势
+
+踩坑记录：assistant 消息**在流式输出期间就已经出现在 `/messages` 里**，
+此时 `info.time.completed` 是 `None`，工具 part 的 `state.status` 可能是 `running`。
+只判断「最后一条是不是 assistant」会**在半途就以为结束**。
+
+正确条件：`info.time.completed` 有值 **且** 没有任何 `state.status=="running"` 的 part，
+并且**连续两次轮询消息数不变**。`mimo_api.is_settled()` / `settle_wait()` 就是干这个的。
+
+### 意外发现：MiMoCode 的会话落盘位置
+
+从工具调用回显里顺带发现：`C:\Users\<u>\.local\share\mimocode\storage\session_diff\<sessionId>.json`
+存放每个会话的 diff 快照（大项目能到 100+ KB）。这不是 API 的一部分，但排查时有用。
+
 

@@ -63,6 +63,55 @@ class MimoError(RuntimeError):
         self.message = message
 
 
+def is_settled(msg):
+    """判断一条消息是否「真的写完了」。
+
+    ★ 这是踩过的坑：assistant 消息在流式输出期间就已经出现在 /messages 里，
+      此时 `info.time.completed` 是 None，且可能有 `state.status=="running"` 的 tool part。
+      只看 role，会在半途就以为结束了。
+
+    规则：
+      - user 消息：不适用（服务端不给 completed 字段），直接视为已完成
+      - assistant：必须有 info.time.completed，且没有任何 running 状态的 part
+    """
+    info = msg.get("info") or {}
+    if info.get("role") != "assistant":
+        return True
+    if (info.get("time") or {}).get("completed") is None:
+        return False
+    for p in (msg.get("parts") or []):
+        if (p.get("state") or {}).get("status") == "running":
+            return False
+    return True
+
+
+def settle_wait(m, session_id, directory=None, timeout=180, interval=4, on_tick=None):
+    """轮询到「最后一条消息已收尾」为止。返回 (ok, messages)。
+
+    结束条件：消息数不再增长，且最后一条 assistant 已 settled。
+    """
+    import time as _t
+    deadline = _t.time() + timeout
+    prev_n, stable = -1, 0
+    while _t.time() < deadline:
+        _t.sleep(interval)
+        cur = m.messages(session_id, directory) or []
+        if cur and (cur[-1].get("info") or {}).get("role") == "assistant" \
+                and is_settled(cur[-1]):
+            if len(cur) == prev_n:
+                stable += 1
+                if stable >= 2:          # 连续两次没变化，才算稳
+                    return True, cur
+            else:
+                stable = 0
+            prev_n = len(cur)
+        else:
+            stable, prev_n = 0, len(cur)
+        if on_tick:
+            on_tick(cur)
+    return False, m.messages(session_id, directory) or []
+
+
 def load_cred(path=None):
     """读 desktop-api.json。注意：这个文件是 MiMo 运行中才存在的，退出时会被删除。"""
     p = path or os.environ.get("MIMO_DESKTOP_API_JSON") or DEFAULT_CRED
